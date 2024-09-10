@@ -2,7 +2,7 @@ from dataclasses import dataclass, field, fields
 from typing import AsyncIterable, Generic, Iterable, Iterator, List, Literal, Optional, TypeVar, override
 from openai import AssistantEventHandler, OpenAI, AsyncOpenAI, Stream
 from openai.types.beta import AssistantStreamEvent
-from openai.types.beta.threads import Text, TextDelta
+from openai.types.beta.threads import Text, TextDelta, Run
 from openai.types.beta.threads.runs import RunStep, RunStepDelta
 
 from pydantic import TypeAdapter
@@ -11,6 +11,8 @@ import streamlit as st
 from langchain_experimental.openai_assistant import OpenAIAssistantRunnable
 from langchain.agents import AgentExecutor
 from langchain.tools import tool
+
+from record import Record
 
 
 
@@ -110,7 +112,6 @@ class Cursor(Generic[T]):
                 self.unpop(evt)
                 return
 
-
     def __iter__(self):
         yield from self._drain()
         for item in self.iter:
@@ -142,7 +143,36 @@ def function_arguments(event: AssistantStreamEvent):
     assert data
     return data
 
+TOOL_RESULTS = {}
+
+import requests
+
+# Define the GraphQL endpoint
+RAILWAY_API_URL = "https://backboard.railway.app/graphql/v2"
+
+@st.dialog("Railway API Key needed")
+def request_api_key():
+    if api_key := st.text_input(label='Railway API Key', value=None):
+        st.session_state.RAILWAY_API_KEY = api_key
+        st.rerun()
+
+def exec_graphql(json):
+    if st.button(label="Run", key=json):
+        api_key = st.session_state.get('RAILWAY_API_KEY', default=None)
+        if not api_key:
+            request_api_key()
+        else:
+            response = requests.post(RAILWAY_API_URL, data=json, headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            })
+            return response.text
+
+from itertools import chain
+
+
 def show_thoughts(stream: Iterable[AssistantStreamEvent]):
+    status = st.empty()
     cursor = Cursor(stream)
     for event in cursor:
         match event.event:
@@ -152,11 +182,22 @@ def show_thoughts(stream: Iterable[AssistantStreamEvent]):
             case 'thread.run.step.delta':
                 cursor.unpop(event)
                 st.write_stream(cursor.scan(function_name))
-                st.write_stream(cursor.scan(function_arguments))
+                before = '<small><pre>'
+                after = '</pre></small>'
+                fn_args = ''.join(st.write_stream(chain(
+                    [before],
+                    cursor.scan(function_arguments),
+                    [after])))
+                id = event.data.delta.step_details.tool_calls[0].id
+                # result = st.text_area(label='Result:', placeholder=''.join(fn_args), value=None, key=id)
+                result = exec_graphql(json=fn_args[len(before):-len(after)])
+                if result is not None:
+                    TOOL_RESULTS[id] = result
             case 'thread.run.failed':
                 st.write(event.data)
             case _:
                 st.write(event.event)
+    status.empty()
 
 assistant = openai.beta.assistants.retrieve('asst_nnCLrbQ8YoUHZB2oh6X0nSIE')
 st.write(assistant.id)
@@ -169,20 +210,6 @@ from openai.types.beta.threads import MessageDeltaEvent, MessageDelta, Message, 
 from openai.types.beta.threads.text_delta_block import TextDeltaBlock
 from openai.types.beta.threads.runs import RunStepDelta, RunStepDeltaEvent, RunStep
 
-def get_hash():
-    x = st_javascript(f"""window.parent.location.hash""")
-    if isinstance(x, str):
-        return x[1:]
-    return None
-
-def set_hash(hash):
-    hash = '#' + hash
-    components.html(f"""<script>
-    const script = parent.document.createElement('script');
-    script.textContent = `window.location.hash = {hash!r}; document.currentScript.remove();`;
-    parent.document.body.appendChild(script);
-    </script>""")
-
 @dataclass
 class Msg:
     role: Literal['user', 'assistant']
@@ -190,7 +217,7 @@ class Msg:
 
 event_adapter = TypeAdapter(list[AssistantStreamEvent])
 def to_msg(message: Message):
-    event_data = [
+    event_data = (
         {
             'event': 'thread.message.delta',
             'data': {
@@ -204,62 +231,143 @@ def to_msg(message: Message):
                 },
             }
         } for i, content in enumerate(message.content)
-    ]       
+    )   
     stream = event_adapter.validate_python(event_data)
     return Msg(role=message.role, stream=stream)
 
-thread_id = get_hash()
-st.write('thread_id=', thread_id)
-if not thread_id:
-    thread = openai.beta.threads.create()
-    st.write('id=', thread.id)
-    set_hash(thread.id)
-    st.session_state.messages = []
-    st.session_state.thread_id = thread.id
-else:
-    thread = openai.beta.threads.retrieve(thread_id)
-    if 'messages' not in st.session_state or st.session_state.thread_id != thread.id:
+def steps_to_msg(steps: list[RunStep]):
+    event_data = []
+    for step in steps:
+        event_data.extend(step_events(step))
+    stream = event_adapter.validate_python(event_data)
+    return Msg(role='assistant', stream=stream)
+
+from openai.types.beta.threads.runs.tool_call_delta_object import ToolCallDeltaObject
+from openai.types.beta.threads.runs.tool_call_delta import ToolCallDelta
+from openai.types.beta.threads.runs.function_tool_call_delta import FunctionToolCallDelta
+
+def step_events(step: RunStep):
+    if step.type != 'tool_calls': return
+    for i, call in enumerate(step.step_details.tool_calls):
+        if call.type == 'function':
+            # RunStepDelta(
+            #     step_details=ToolCallDeltaObject(type='tool_calls', tool_calls=[
+            #         FunctionToolCallDelta(index=i, type='function', id=call.id, function=
+            #     ])
+            # )
+            yield {
+                'event': 'thread.run.step.delta',
+                'data': {
+                    'id': step.id,
+                    'object': 'thread.run.step.delta',
+                    'delta': {
+                        'step_details': {
+                            'type': step.type,
+                            'tool_calls': [{
+                                'id': call.id,
+                                'index': i,
+                                'type': 'function',
+                                'function': {
+                                    'name': call.function.name
+                                }
+                            }]
+                        }
+                    }
+                }
+            }
+            yield {
+                'event': 'thread.run.step.delta',
+                'data': {
+                    'id': step.id,
+                    'object': 'thread.run.step.delta',
+                    'delta': {
+                        'step_details': {
+                            'type': step.type,
+                            'tool_calls': [{
+                                'id': call.id,
+                                'index': i,
+                                'type': 'function',
+                                'function': {
+                                    'arguments': call.function.arguments
+                                }
+                            }]
+                        }
+                    }
+                }
+            }
+
+from openai.types.beta.thread import Thread
+
+thread: Optional[Thread] = st.session_state.get('thread', default=None)
+thread_id = st.query_params.get('thread_id', None)
+if getattr(thread, 'id', None) != thread_id:
+    if thread_id:
+        thread = openai.beta.threads.retrieve(thread_id)
         st.session_state.messages = []
-        st.session_state.thread_id = thread.id
+        st.session_state.thread = thread
         # Load messages from OpenAI
         for message in openai.beta.threads.messages.list(thread.id, order='asc'):            
             st.session_state.messages.append(to_msg(message))
+        last_runs = openai.beta.threads.runs.list(thread_id=thread.id, order='desc', limit=1).data
+        if last_runs:
+            run = last_runs[0]
+            steps = openai.beta.threads.runs.steps.list(run_id=run.id, thread_id=thread.id)
+            st.session_state.messages.append(steps_to_msg(steps.data))
 
 def render_message(message: Msg):
     with st.chat_message(message.role):
         show_thoughts(message.stream)
 
 # Show message history
-for message in st.session_state.messages:
+for message in st.session_state.get('messages', []):
     render_message(message)
 
+def run_agent_tick(stream: AssistantEventHandler):
+    assistant_msg = Msg(role='assistant', stream=Record(stream))
+    st.session_state.messages.append(assistant_msg)
+    render_message(assistant_msg)
+    return stream.get_final_run()
+
+def run_agent_loop(*, stream: Optional[AssistantEventHandler] = None, run: Optional[Run] = None):
+    assert stream or run and not (stream and run)
+    if not run:
+        run = run_agent_tick(stream)
+    while run:
+        run = handle_required_actions(run)    
+
+def handle_required_actions(run: Run):
+    if not run.required_action: return None
+    calls = run.required_action.submit_tool_outputs.tool_calls
+    if all(call.id in TOOL_RESULTS for call in calls):
+        stream_mgr = openai.beta.threads.runs.submit_tool_outputs_stream(
+            run_id = run.id,
+            thread_id = run.thread_id,
+            tool_outputs=(
+                { 'tool_call_id': call.id, 'output': TOOL_RESULTS[call.id] }
+                for call in calls
+            ))
+        with stream_mgr as stream:
+            return run_agent_tick(stream)
+    # else:
+    #     st.write('waiting for')
+    #     [call.id if call.id not in TOOL_RESULTS else None for call in calls]
+
 if prompt := st.chat_input("🛤️"):
+    if not thread:
+        thread = openai.beta.threads.create()
+        st.query_params.thread_id = thread.id
+        st.session_state.thread = thread
+        st.session_state.messages = []
+
     message = openai.beta.threads.messages.create(thread.id, content=prompt, role='user')
     user_msg = to_msg(message)
     st.session_state.messages.append(user_msg)
     render_message(user_msg)
-
-    with st.chat_message("assistant"):
-        # run = openai.beta.threads.create_and_run_stream(assistant_id=assistant.id, tools=[QUERY], thread_id=thread.id)
-        run = openai.beta.threads.runs.stream(thread_id=thread.id, assistant_id=assistant.id, tools=[QUERY])
-        while run:
-            with run as stream:
-                run = None
-                show_thoughts(stream)
-                steps = stream.get_final_run_steps()
-                last_run = stream.get_final_run()
-                st.write(steps)                
-                for step in steps:
-                    if hasattr(step.step_details, 'tool_calls'):
-                        calls = step.step_details.tool_calls
-                        # openai.beta.threads.runs.submit_tool_outputs()
-                        run = openai.beta.threads.runs.submit_tool_outputs_stream(
-                            run_id = last_run.id,
-                            thread_id = last_run.thread_id,
-                            tool_outputs=(
-                                { 'tool_call_id': call.id, 'output': 'ok' }
-                                for call in calls
-                            ))
-                    if run: break
-                last_run
-
+    
+    with openai.beta.threads.runs.stream(thread_id=thread.id, assistant_id=assistant.id, tools=[QUERY]) as stream:
+        run_agent_loop(stream=stream)
+elif thread:
+    last_runs = openai.beta.threads.runs.list(thread_id=thread.id, order='desc', limit=1).data
+    if last_runs:
+        last_runs[0].status
+        run_agent_loop(run=last_runs[0])

@@ -1,0 +1,105 @@
+<!doctype html>
+<style>
+    body:not(.no_key):not(.has_key) { display: none; }
+    body.no_key .has_key { display: none; }
+    body.has_key .no_key { display: none; }
+    body.has_key .has_key { display: block; }
+    body.no_key .no_key { display: block; }
+
+</style>
+<div class=no_key>
+    <form>
+        <input type="password" id=api_key placeholder=RAILWAY_API_KEY></input>
+        <input type=submit value=save>
+    </form>
+</div>
+<div class=has_key>
+    <button id=run disabled>Run</button>
+</div>
+<script>
+    function onStorage() {
+        document.body.classList.remove('no_key')
+        document.body.classList.remove('has_key')
+        if (!localStorage.RAILWAY_API_KEY) {
+            document.body.classList.add('no_key')
+        } else {
+            document.body.classList.add('has_key')
+        }
+    }
+    onStorage()
+    addEventListener('storage', onStorage)
+    addEventListener('submit', onSubmit)
+
+    function onSubmit(event) {
+        event.preventDefault()
+        localStorage.RAILWAY_API_KEY = api_key.value
+        onStorage()
+    }
+</script>
+
+<script>
+function sendMessageToStreamlitClient(type, data) {
+    window.parent.postMessage({
+        isStreamlitMessage: true,
+        type: type,
+        ...data
+    }, "*")
+}
+
+const Streamlit = {
+    setComponentReady: function() {
+        sendMessageToStreamlitClient("streamlit:componentReady", {apiVersion: 1});
+    },
+    setFrameHeight: function(height) {
+        sendMessageToStreamlitClient("streamlit:setFrameHeight", {height: height});
+    },
+    setComponentValue: function(value) {
+        sendMessageToStreamlitClient("streamlit:setComponentValue", {value: value});
+    },
+    RENDER_EVENT: "streamlit:render",
+    events: {
+        addEventListener: function(type, callback) {
+            window.addEventListener("message", function(event) {
+                if (event.data.type === type) {
+                    event.detail = event.data
+                    callback(event);
+                }
+            });
+        }
+    }
+}
+
+function onRender(event) {
+    const body = event.detail.args.json
+    run.disabled = false
+    run.onclick = async () => {
+        console.log('clicked', body)
+        run.disabled = true
+
+        // Define the options for the Fetch request
+        const options = {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Requested-With': 'GraphiQL',
+                'Authorization': `Bearer ${localStorage.RAILWAY_API_KEY}`,
+            },
+            mode: 'no-cors',
+            body
+        };
+
+        // Make the Fetch request to the GraphQL endpoint
+        try {
+            const response = await fetch('https://cors-anywhere-production-740e.up.railway.app/backboard.railway.app:443/graphql/v2', {options})
+            const result = await response.text()
+            console.log(result)
+            Streamlit.setComponentValue(result)
+        } catch(error) {
+            Streamlit.setComponentValue(`An error occurred: ${error}\n\nIf possible, try to fix it and resubmit the query.`)
+        }
+    }
+}
+Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+Streamlit.setComponentReady(true)
+Streamlit.setFrameHeight(50)
+</script>
