@@ -8,24 +8,11 @@ from openai.types.beta.threads.runs import RunStep, RunStepDelta
 from pydantic import TypeAdapter
 import streamlit as st
 
-from langchain_experimental.openai_assistant import OpenAIAssistantRunnable
-from langchain.agents import AgentExecutor
-from langchain.tools import tool
-
 from record import Record
-
 
 
 openai = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-@tool
-def query(query: str):
-    """
-    query the railway graphql endpoint
-    """
-    return "ok"
-
-tools = [query]
 
 @st.cache_data
 def railway_api() -> str:
