@@ -179,7 +179,6 @@ def show_thoughts(stream: Iterable[AssistantStreamEvent]):
 assistant = openai.beta.assistants.retrieve('asst_nnCLrbQ8YoUHZB2oh6X0nSIE')
 st.write(assistant.id)
 
-from streamlit_javascript import st_javascript
 import streamlit.components.v1 as components
 
 from openai.types.beta.assistant_stream_event import ThreadRunStepCompleted, ThreadMessageDelta, ThreadMessageCreated
