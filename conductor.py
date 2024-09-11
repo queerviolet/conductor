@@ -408,6 +408,7 @@ for message in st.session_state.get('messages', default=EMPTY):
     # render_message(message)
     show_history_item(message)
 
+from openai.types.beta.threads.text_content_block import TextContentBlock
 
 def run_agent_tick(stream: AssistantEventHandler):
     # assistant_msg = Msg(role='assistant', stream=Record(stream))
@@ -416,13 +417,14 @@ def run_agent_tick(stream: AssistantEventHandler):
     cursor = Cursor(stream)
     for event in stream:
         match event.event:
+            case 'thread.message.completed':
+                st.session_state.messages.append(event.data)
             case 'thread.message.delta':
                 cursor.unpop(event)
-                with st.chat_message('assistant'):
-                    st.write_stream(cursor.scan(message_content))
+                st.chat_message('assistant').write_stream(cursor.scan(message_content))
             case 'thread.run.step.delta':
-                cursor.unpop(event)
                 step = None
+                cursor.unpop(event)
                 for _ in cursor.scan(step_delta):
                     current_step = stream.current_run_step_snapshot
                     if current_step: step = current_step
