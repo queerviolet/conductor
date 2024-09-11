@@ -62,36 +62,6 @@ QUERY = {
 #     model="gpt-4o",
 # )
 
-T = TypeVar('T')
-class Cursor(Generic[T]):
-    iter: Iterator[T]
-    _prepend: List[T]
-
-    def __init__(self, iterable: Iterator[T] | Iterable[T]):
-        self.iter = iter(iterable)
-        self._prepend = []
-
-    def scan(self, data_fn=lambda event: event, until=AssertionError):
-        for evt in self:
-            try:
-                yield data_fn(evt)
-            except until:
-                self.unpop(evt)
-                return
-
-    def __iter__(self):
-        yield from self._drain()
-        for item in self.iter:
-            yield item
-            yield from self._drain()
-
-    def _drain(self):
-        while self._prepend:
-            yield self._prepend.pop(0)
-
-    def unpop(self, item: T):
-        self._prepend.append(item)
-        return self
 
 def message_content(event: AssistantStreamEvent):
     assert event.event == 'thread.message.delta'
@@ -105,30 +75,10 @@ def step_delta(event: AssistantStreamEvent):
         data = event.data.delta.step_details.tool_calls[0].function.arguments
     return data
 
-
-def function_name(event: AssistantStreamEvent):
-    assert event.event == 'thread.run.step.delta'
-    data = event.data.delta.step_details.tool_calls[0].function.name
-    assert data
-    return data
-
-def function_arguments(event: AssistantStreamEvent):
-    assert event.event == 'thread.run.step.delta'
-    data = event.data.delta.step_details.tool_calls[0].function.arguments
-    assert data
-    return data
-
-
 import requests
 
 # Define the GraphQL endpoint
 RAILWAY_API_URL = "https://backboard.railway.app/graphql/v2"
-
-@st.dialog("Railway API Key needed")
-def request_api_key():
-    if api_key := st.text_input(label='Railway API Key', value=None):
-        st.session_state.RAILWAY_API_KEY = api_key
-        st.rerun()
 
 def exec_graphql(json, key, result=None):
     with st.form(key):
@@ -148,129 +98,16 @@ def exec_graphql(json, key, result=None):
 
 from itertools import chain
 
-
-def show_thoughts(stream: Iterable[AssistantStreamEvent]):
-    status = st.empty()
-    cursor = Cursor(stream)
-    for event in cursor:
-        match event.event:
-            case 'thread.message.delta':
-                cursor.unpop(event)
-                st.write_stream(cursor.scan(message_content))
-            case 'thread.run.step.delta':
-                cursor.unpop(event)
-                st.write_stream(cursor.scan(function_name))
-                before = '<small><pre>'
-                after = '</pre></small>'
-                fn_args = ''.join(st.write_stream(chain(
-                    [before],
-                    cursor.scan(function_arguments),
-                    [after])))
-                id = event.data.delta.step_details.tool_calls[0].id
-                # result = st.text_area(label='Result:', placeholder=''.join(fn_args), value=None, key=id)
-                result = exec_graphql(json=fn_args[len(before):-len(after)], key=id)
-                if result is not None:
-                    TOOL_RESULTS[id] = result
-            case 'thread.run.failed':
-                st.write(event.data)
-            case _:
-                status.write(event.event)
-
 assistant = openai.beta.assistants.retrieve('asst_nnCLrbQ8YoUHZB2oh6X0nSIE')
 st.write(assistant.id)
 
-import streamlit.components.v1 as components
-
-from openai.types.beta.assistant_stream_event import ThreadRunStepCompleted, ThreadMessageDelta, ThreadMessageCreated
-from openai.types.beta.threads import MessageDeltaEvent, MessageDelta, Message, MessageContentDelta
-from openai.types.beta.threads.text_delta_block import TextDeltaBlock
-from openai.types.beta.threads.runs import RunStepDelta, RunStepDeltaEvent, RunStep
+from openai.types.beta.threads import Message
+from openai.types.beta.threads.runs import RunStep
 
 @dataclass
 class Msg:
     role: Literal['user', 'assistant']
     stream: Iterable[AssistantStreamEvent]
-
-event_adapter = TypeAdapter(list[AssistantStreamEvent])
-def to_msg(message: Message):
-    event_data = (
-        {
-            'event': 'thread.message.delta',
-            'data': {
-                'id': message.id,
-                'object': 'thread.message.delta',
-                'delta': {
-                    'content': [{
-                        'index': i,                                
-                        **content.model_dump(),
-                    }]
-                },
-            }
-        } for i, content in enumerate(message.content)
-    )   
-    stream = event_adapter.validate_python(event_data)
-    return Msg(role=message.role, stream=stream)
-
-def steps_to_msg(steps: list[RunStep]):
-    event_data = []
-    for step in steps:
-        event_data.extend(step_events(step))
-    stream = event_adapter.validate_python(event_data)
-    return Msg(role='assistant', stream=stream)
-
-from openai.types.beta.threads.runs.tool_call_delta_object import ToolCallDeltaObject
-from openai.types.beta.threads.runs.tool_call_delta import ToolCallDelta
-from openai.types.beta.threads.runs.function_tool_call_delta import FunctionToolCallDelta
-
-def step_events(step: RunStep):
-    if step.type != 'tool_calls': return
-    for i, call in enumerate(step.step_details.tool_calls):
-        if call.type == 'function':
-            # RunStepDelta(
-            #     step_details=ToolCallDeltaObject(type='tool_calls', tool_calls=[
-            #         FunctionToolCallDelta(index=i, type='function', id=call.id, function=
-            #     ])
-            # )
-            yield {
-                'event': 'thread.run.step.delta',
-                'data': {
-                    'id': step.id,
-                    'object': 'thread.run.step.delta',
-                    'delta': {
-                        'step_details': {
-                            'type': step.type,
-                            'tool_calls': [{
-                                'id': call.id,
-                                'index': i,
-                                'type': 'function',
-                                'function': {
-                                    'name': call.function.name
-                                }
-                            }]
-                        }
-                    }
-                }
-            }
-            yield {
-                'event': 'thread.run.step.delta',
-                'data': {
-                    'id': step.id,
-                    'object': 'thread.run.step.delta',
-                    'delta': {
-                        'step_details': {
-                            'type': step.type,
-                            'tool_calls': [{
-                                'id': call.id,
-                                'index': i,
-                                'type': 'function',
-                                'function': {
-                                    'arguments': call.function.arguments
-                                }
-                            }]
-                        }
-                    }
-                }
-            }
 
 from openai.types.beta.thread import Thread
 import asyncio as aio
@@ -301,44 +138,6 @@ if getattr(thread, 'id', None) != thread_id:
         thread = openai.beta.threads.retrieve(thread_id)
         st.session_state.thread = thread
         st.session_state.messages = aio.run(load_history(thread))        
-
-def render_message(message: Msg):
-    with st.chat_message(message.role):
-        show_thoughts(message.stream)
-
-from html import escape
-from streamlit.delta_generator import DeltaGenerator
-
-# class RunStatusLine:
-#     last: Optional['RunStatusLine'] = None
-#     container: DeltaGenerator
-
-#     def __init__(self, run: Optional[Run]):
-#         self.container = st.empty()
-#         self.text = ''
-#         self.run = run
-#         self.update(run)
-#         RunStatusLine.last = self
-    
-#     def update(self, run: Optional[Run] = None, text: Optional[str] = None):
-#         if run:
-#             self.run = run
-#         else:
-#             run = self.run
-#         if not run:
-#             content = ''
-#         else:        
-#             ended_at = getattr(run, f'{run.status}_at', None)
-#             if ended_at:
-#                 duration = ended_at - run.created_at
-#                 duration_str = f' in {duration}ms'
-#             else: duration_str = ''
-#             content = escape(f'{run.id} {run.status}{duration_str}')
-#             if text:
-#                 content = f"<pre style='color: blue'>{escape(self.text)}</pre>{content}"
-#         self.container.html(f"""
-#         <div style='font-size: 75%; text-align: right'>{content}</div>
-#         """)
 
 import json
 
@@ -387,34 +186,44 @@ for message in st.session_state.get('messages', default=EMPTY):
 
 from openai.types.beta.threads.text_content_block import TextContentBlock
 
+def scan(iter, data_fn=lambda event: event, until=AssertionError, tail=None):
+    for item in iter:
+        try:
+            yield data_fn(item)
+        except until:
+            if tail: tail.append(item)
+            return
+
 def run_agent_tick(stream: AssistantEventHandler):
-    # assistant_msg = Msg(role='assistant', stream=Record(stream))
-    # st.session_state.messages.append(assistant_msg)
-    # render_message(assistant_msg)
-    cursor = Cursor(stream)
     for event in stream:
         match event.event:
-            case 'thread.message.completed':
-                st.session_state.messages.append(event.data)
             case 'thread.message.delta':
-                cursor.unpop(event)
-                st.chat_message('assistant').write_stream(cursor.scan(message_content))
+                final = []
+                st.chat_message('assistant').write_stream(
+                   scan(chain([event], stream), message_content, tail=final))
+                if final:
+                    st.write(final)
+                    st.session_state.message.append(final[0])
             case 'thread.run.step.delta':
                 step = None
-                cursor.unpop(event)
-                for _ in cursor.scan(step_delta):
-                    current_step = stream.current_run_step_snapshot
-                    if current_step: step = current_step
+                for _ in scan(stream, step_delta):
+                    step = stream.current_run_step_snapshot
                 if step:
                     st.session_state.messages.append(step)
                     show_history_item(step)
+            case 'thread.run.step.completed':
+                step = event.data
+                if step.type == 'message_creation':
+                    st.session_state.messages.append(stream.current_message_snapshot)
             case 'thread.run.failed':
-                st.chat_message('⛔️').write(event.data)
+                st.chat_message('⛔️').write(event.data.last_error)  
     final_run = stream.get_final_run()
     return final_run
 
-def run_agent_loop(run: Run):
+def run_agent_loop(*, run: Run = None, stream = None):
     with st.spinner('Processing...'):
+        if stream:
+            run = run_agent_tick(stream)
         while run:
             run = handle_required_actions(run)
 
@@ -444,8 +253,8 @@ if prompt := st.chat_input("🛤️"):
     show_history_item(message)
 
     with openai.beta.threads.runs.stream(thread_id=thread.id, assistant_id=assistant.id, tools=[QUERY]) as stream:
-        run_agent_loop(run_agent_tick(stream))
+        run_agent_loop(stream=stream)
 elif thread:
     last_runs = openai.beta.threads.runs.list(thread_id=thread.id, order='desc', limit=1).data
     if last_runs:
-        run_agent_loop(last_runs[0])
+        run_agent_loop(run=last_runs[0])
