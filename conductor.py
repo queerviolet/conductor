@@ -12,8 +12,13 @@ from record import Record
 
 import os
 
-openai = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.environ.get('OPENAI_API_KEY')))
-aopenai = AsyncOpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.environ.get('OPENAI_API_KEY')))
+try:
+    OPENAI_API_KEY = st.secrets['OPENAI_API_KEY']
+except FileNotFoundError:
+    OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
+
+openai = OpenAI(api_key=OPENAI_API_KEY)
+aopenai = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 @st.cache_data
 def railway_api() -> str:
