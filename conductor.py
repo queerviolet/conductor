@@ -8,24 +8,19 @@ from openai.types.beta.threads.runs import RunStep, RunStepDelta
 from pydantic import TypeAdapter
 import streamlit as st
 
-from record import Record
-
 import os
 
-try:
-    OPENAI_API_KEY = st.secrets['OPENAI_API_KEY']
-except FileNotFoundError:
-    OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
+# try:
+#     OPENAI_API_KEY = st.secrets['OPENAI_API_KEY']
+# except FileNotFoundError:
+#     OPENAI_API_KEY = os.environ['OPENAI_API_KEY']
 
-openai = OpenAI(api_key=OPENAI_API_KEY)
-aopenai = AsyncOpenAI(api_key=OPENAI_API_KEY)
+openai = OpenAI()
+aopenai = AsyncOpenAI()
 
 @st.cache_data
 def railway_api() -> str:
     with open('railway.graphql') as idl: return idl.read()
-
-# assistant = OpenAIAssistantRunnable(assistant_id=assistant_id(), client=openai, tools=tools, as_agent=True)
-# agent = AgentExecutor(agent=assistant, tools=tools)
 
 TOOL_RESULTS = st.session_state.setdefault('tool_results', {})
 
@@ -66,30 +61,8 @@ QUERY = {
 #     tools=[QUERY],
 #     model="gpt-4o",
 # )
-from langchain_core.agents import AgentFinish
-
-# def execute_agent(agent: OpenAIAssistantRunnable, tools, input: dict):
-#     tool_map = {tool.name: tool for tool in tools}
-#     response = agent.stream(input)
-#     st.write(response)
-#     while not isinstance(response, AgentFinish):
-#         tool_outputs = []
-#         for action in response:
-#             st.write(action)
-#             tool_output = tool_map[action.tool].invoke(action.tool_input)
-#             tool_outputs.append({"output": tool_output, "tool_call_id": action.tool_call_id})
-#         response = agent.invoke(
-#             {
-#                 "tool_outputs": tool_outputs,
-#                 "run_id": action.run_id,
-#                 "thread_id": action.thread_id
-#             }
-#         )
-
-#     return response
 
 T = TypeVar('T')
-
 class Cursor(Generic[T]):
     iter: Iterator[T]
     _prepend: List[T]
