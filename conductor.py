@@ -47,21 +47,23 @@ QUERY = {
     }
 }
 
-# assistant = openai.beta.assistants.create(
-#     name="conductor",
-#     instructions=f"""You are Conductor, an assistant for the Railway deployment platform.
-#     You will be provided with the GraphQL schema for the Railway API. You are a GraphQL expert. When the user asks a question or asks for a task to be performed, provide a graphql query or mutation to handle the user's request.
+assistant = openai.beta.assistants.create(
+    name="conductor",
+    instructions=f"""You are Conductor, an assistant for the Railway deployment platform.
+    You will be provided with the GraphQL schema for the Railway API. You are a GraphQL expert. When the user asks a question or asks for a task to be performed, provide a graphql query or mutation to handle the user's request.
 
-#     Railway GraphQL Schema:
+    Railway GraphQL Schema:
 
-#     ```graphql
-#     {railway_api()}
-#     ```
-#     """,
-#     tools=[QUERY],
-#     model="gpt-4o",
-# )
+    ```graphql
+    {railway_api()}
+    ```
+    """,
+    tools=[QUERY],
+    model="gpt-4o",
+)
 
+# assistant = openai.beta.assistants.retrieve('asst_nnCLrbQ8YoUHZB2oh6X0nSIE')
+# st.html(f'<small>{assistant.id}</small>')
 
 def message_content(event: AssistantStreamEvent):
     assert event.event == 'thread.message.delta'
@@ -97,9 +99,6 @@ def exec_graphql(json, key, result=None):
                 st.code(result, key=f'result_{key}')
 
 from itertools import chain
-
-assistant = openai.beta.assistants.retrieve('asst_nnCLrbQ8YoUHZB2oh6X0nSIE')
-st.write(assistant.id)
 
 from openai.types.beta.threads import Message
 from openai.types.beta.threads.runs import RunStep
